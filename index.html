@@ -306,11 +306,19 @@ window.PORTAL_CONFIG = {
   };
   window.addEventListener('message', event => {
     if (!busy || !activeRequest) return;
-    let host;
-    try { host = new URL(event.origin).hostname; } catch { return; }
-    if (!(host === 'script.google.com' || host === 'script.googleusercontent.com' || host.endsWith('.googleusercontent.com'))) return;
     const data = event.data;
+    // Match the unpredictable per-submission nonce before accepting any response.
     if (!data || data.kind !== 'exam-issue-result' || data.requestId !== activeRequest) return;
+    // Google Apps Script HTMLService may emit an opaque ("null") origin from its sandbox.
+    // Accept only Google-owned origins or that opaque sandbox origin, with the nonce above.
+    let allowedOrigin = event.origin === 'null';
+    if (!allowedOrigin) {
+      try {
+        const host = new URL(event.origin).hostname;
+        allowedOrigin = host === 'script.google.com' || host === 'script.googleusercontent.com' || host.endsWith('.googleusercontent.com');
+      } catch (_) { return; }
+    }
+    if (!allowedOrigin) return;
     if (data.ok) {
       setStatus(`تم استلام البلاغ بنجاح. الرقم المرجعي: ${data.reference}. احتفظ بهذا الرقم للمتابعة.`, 'success');
       form.reset(); courseId.value=''; chosen.hidden=true; search.value=''; $('#fileName').textContent='اختيار ملف';
@@ -357,7 +365,13 @@ window.PORTAL_CONFIG = {
       document.body.appendChild(post);
       post.submit(); post.remove();
       setStatus('جارٍ إرسال البلاغ. لا تغلق الصفحة قبل ظهور رقم البلاغ.', 'success');
-      // Do not claim submission succeeded until Google sends a confirmed response.
+      // A timeout is not proof of failure: the server may already have saved the report.
+      setTimeout(() => {
+        if (activeRequest !== requestId) return;
+        activeRequest = null;
+        setBusy(false);
+        setStatus('لم يصل تأكيد الاستلام إلى الصفحة. ربما تم حفظ البلاغ بالفعل؛ يُرجى مراجعة القسم قبل إعادة الإرسال لتجنب تكرار البلاغ.', 'error');
+      }, 30000);
     } catch (err) { activeRequest = null; setBusy(false); setStatus('تعذر تجهيز البلاغ للإرسال. يرجى إعادة المحاولة.', 'error'); }
   });
 })();
