@@ -365,13 +365,48 @@ window.PORTAL_CONFIG = {
       document.body.appendChild(post);
       post.submit(); post.remove();
       setStatus('جارٍ إرسال البلاغ. لا تغلق الصفحة قبل ظهور رقم البلاغ.', 'success');
-      // A timeout is not proof of failure: the server may already have saved the report.
-      setTimeout(() => {
+      // Independent receipt polling through Apps Script's JSONP status endpoint.
+      // Unlike iframe postMessage, this survives Google's HTMLService iframe wrappers.
+      let pollNumber = 0;
+      const pollReceipt = () => {
         if (activeRequest !== requestId) return;
-        activeRequest = null;
-        setBusy(false);
-        setStatus('لم يصل تأكيد الاستلام إلى الصفحة. ربما تم حفظ البلاغ بالفعل؛ يُرجى مراجعة القسم قبل إعادة الإرسال لتجنب تكرار البلاغ.', 'error');
-      }, 30000);
+        if (++pollNumber > 14) {
+          activeRequest = null;
+          setBusy(false);
+          setStatus('لم نتمكن من التحقق من تأكيد الاستلام. قد يكون البلاغ قد سُجّل؛ تواصل مع القسم قبل إعادة الإرسال حتى لا يتكرر.', 'error');
+          return;
+        }
+        const callbackName = 'issueStatus_' + Math.random().toString(36).slice(2,12);
+        const script = document.createElement('script');
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          delete window[callbackName];
+          script.remove();
+          if (activeRequest === requestId) setTimeout(pollReceipt, 3000);
+        };
+        window[callbackName] = (result) => {
+          if (done || activeRequest !== requestId) return;
+          if (result && result.found && /^EX-\d{8}-\d{5}$/.test(result.reference || '')) {
+            done = true;
+            delete window[callbackName];
+            script.remove();
+            setStatus('تم استلام البلاغ بنجاح. الرقم المرجعي: ' + result.reference + '. احتفظ بهذا الرقم للمتابعة.', 'success');
+            form.reset(); courseId.value = ''; chosen.hidden = true; search.value = '';
+            $('#fileName').textContent = 'اختيار ملف';
+            activeRequest = null;
+            setBusy(false);
+            status.scrollIntoView({behavior:'smooth', block:'center'});
+          } else finish();
+        };
+        script.onerror = finish;
+        script.src = cfg.endpoint + '?mode=status&requestId=' + encodeURIComponent(requestId)
+          + '&callback=' + encodeURIComponent(callbackName) + '&nonce=' + Date.now();
+        document.head.appendChild(script);
+        setTimeout(finish, 5500);
+      };
+      setTimeout(pollReceipt, 2500);
     } catch (err) { activeRequest = null; setBusy(false); setStatus('تعذر تجهيز البلاغ للإرسال. يرجى إعادة المحاولة.', 'error'); }
   });
 })();
