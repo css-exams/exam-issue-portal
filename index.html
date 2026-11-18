@@ -304,29 +304,6 @@ window.PORTAL_CONFIG = {
     busy = flag; submitBtn.disabled = flag;
     submitBtn.firstChild.textContent = flag ? 'جارٍ إرسال البلاغ...' : 'إرسال البلاغ ';
   };
-  window.addEventListener('message', event => {
-    if (!busy || !activeRequest) return;
-    const data = event.data;
-    // Match the unpredictable per-submission nonce before accepting any response.
-    if (!data || data.kind !== 'exam-issue-result' || data.requestId !== activeRequest) return;
-    // Google Apps Script HTMLService may emit an opaque ("null") origin from its sandbox.
-    // Accept only Google-owned origins or that opaque sandbox origin, with the nonce above.
-    let allowedOrigin = event.origin === 'null';
-    if (!allowedOrigin) {
-      try {
-        const host = new URL(event.origin).hostname;
-        allowedOrigin = host === 'script.google.com' || host === 'script.googleusercontent.com' || host.endsWith('.googleusercontent.com');
-      } catch (_) { return; }
-    }
-    if (!allowedOrigin) return;
-    if (data.ok) {
-      setStatus(`تم استلام البلاغ بنجاح. الرقم المرجعي: ${data.reference}. احتفظ بهذا الرقم للمتابعة.`, 'success');
-      form.reset(); courseId.value=''; chosen.hidden=true; search.value=''; $('#fileName').textContent='اختيار ملف';
-    } else setStatus(data.message || 'تعذر حفظ البلاغ. يرجى المحاولة مرة أخرى.', 'error');
-    activeRequest = null; setBusy(false);
-    status.scrollIntoView({behavior:'smooth', block:'center'});
-  });
-
   form.addEventListener('submit', async e => {
     e.preventDefault();
     if (busy) return;
@@ -352,61 +329,29 @@ window.PORTAL_CONFIG = {
       payload.fileName = file?.name || '';
       payload.fileMime = file?.type || '';
       payload.fileBase64 = file ? await toBase64(file) : '';
-      const target = $('#submissionFrame');
-      target.name = 'submissionFrame';
+      // Full-page POST navigation: Google shows a confirmation ONLY after saving.
+      // No cross-origin iframe messages, JSONP polling, or optimistic success.
       const post = document.createElement('form');
       post.action = cfg.endpoint;
       post.method = 'POST';
-      post.target = target.name;
+      post.target = '_self';
       post.style.display = 'none';
       Object.entries(payload).forEach(([key, value]) => {
-        const input = document.createElement('input'); input.type='hidden'; input.name=key; input.value=String(value); post.appendChild(input);
+        const input = document.createElement('input');
+        input.type = 'hidden'; input.name = key; input.value = String(value);
+        post.appendChild(input);
       });
       document.body.appendChild(post);
-      post.submit(); post.remove();
-      setStatus('جارٍ إرسال البلاغ. لا تغلق الصفحة قبل ظهور رقم البلاغ.', 'success');
-      // Independent receipt polling through Apps Script's JSONP status endpoint.
-      // Unlike iframe postMessage, this survives Google's HTMLService iframe wrappers.
-      let pollNumber = 0;
-      const pollReceipt = () => {
+      setStatus('جارٍ إرسال البلاغ والتحقق من حفظه...', 'info');
+      post.submit();
+      // If the browser fails to navigate, avoid leaving the user stuck forever.
+      setTimeout(() => {
         if (activeRequest !== requestId) return;
-        if (++pollNumber > 14) {
-          activeRequest = null;
-          setBusy(false);
-          setStatus('لم نتمكن من التحقق من تأكيد الاستلام. قد يكون البلاغ قد سُجّل؛ تواصل مع القسم قبل إعادة الإرسال حتى لا يتكرر.', 'error');
-          return;
-        }
-        const callbackName = 'issueStatus_' + Math.random().toString(36).slice(2,12);
-        const script = document.createElement('script');
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          delete window[callbackName];
-          script.remove();
-          if (activeRequest === requestId) setTimeout(pollReceipt, 3000);
-        };
-        window[callbackName] = (result) => {
-          if (done || activeRequest !== requestId) return;
-          if (result && result.found && /^EX-\d{8}-\d{5}$/.test(result.reference || '')) {
-            done = true;
-            delete window[callbackName];
-            script.remove();
-            setStatus('تم استلام البلاغ بنجاح. الرقم المرجعي: ' + result.reference + '. احتفظ بهذا الرقم للمتابعة.', 'success');
-            form.reset(); courseId.value = ''; chosen.hidden = true; search.value = '';
-            $('#fileName').textContent = 'اختيار ملف';
-            activeRequest = null;
-            setBusy(false);
-            status.scrollIntoView({behavior:'smooth', block:'center'});
-          } else finish();
-        };
-        script.onerror = finish;
-        script.src = cfg.endpoint + '?mode=status&requestId=' + encodeURIComponent(requestId)
-          + '&callback=' + encodeURIComponent(callbackName) + '&nonce=' + Date.now();
-        document.head.appendChild(script);
-        setTimeout(finish, 5500);
-      };
-      setTimeout(pollReceipt, 2500);
+        activeRequest = null;
+        setBusy(false);
+        setStatus('تعذر عرض نتيجة الإرسال. قد يكون البلاغ محفوظًا؛ يرجى التحقق من القسم قبل محاولة جديدة.', 'error');
+        post.remove();
+      }, 20000);
     } catch (err) { activeRequest = null; setBusy(false); setStatus('تعذر تجهيز البلاغ للإرسال. يرجى إعادة المحاولة.', 'error'); }
   });
 })();
